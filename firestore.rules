@@ -1,0 +1,136 @@
+rules_version = '2';
+
+// ════════════════════════════════════════════════════════════════
+// QUINIELA BORRACHA 2026 — Reglas de seguridad de Firestore (v6.4)
+// ════════════════════════════════════════════════════════════════
+// Cómo publicar: Firebase Console -> proyecto "quiniela-borracha" ->
+// Firestore Database -> pestaña "Reglas" -> pegar este archivo completo
+// (reemplazando lo que haya) -> "Publicar". No tienen efecto hasta que
+// se publiquen ahí — esto es solo el texto, no algo que el código JS
+// pueda aplicar por sí mismo.
+//
+// Modelo de autenticación usado por estas reglas (ver app.js::wireFirebaseAuth
+// y participantes.js para el código que las usa):
+//   - Admin:        Firebase Auth con correo+contraseña real (Tato).
+//                    request.auth.token.email == "agustingb23@gmail.com"
+//                    y request.auth.token.email_verified... (NO se exige
+//                    verificación de correo aquí a propósito: Firebase
+//                    Auth ya garantiza que solo quien conoce la
+//                    contraseña real puede autenticarse con ese email).
+//   - Participante: Firebase Auth Anónima (signInAnonymously()), un UID
+//                    estable por dispositivo/navegador mientras no se
+//                    borren cookies/datos del sitio. NUNCA es admin
+//                    (user.isAnonymous queda true para estas sesiones).
+//
+// Plan Spark (gratuito): estas reglas NO requieren Cloud Functions, solo
+// Firestore + Firebase Auth, ambos incluidos en el plan gratuito.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── RESULTADOS REALES, BONOS, BATALLAS — sin cambios respecto a
+    // versiones anteriores. Solo el admin puede escribir; cualquiera
+    // puede leer (el Ranking público lo necesita).
+    match /quiniela/estado {
+      allow read: if true;
+      allow write: if request.auth != null
+                   && request.auth.token.email == "agustingb23@gmail.com";
+    }
+
+    // ── "MI QUINIELA" — v6.4, Fase de Seguridad ──────────────────────
+    // Reemplaza al viejo documento único "registro/estado" (escritura
+    // pública sin ninguna validación de servidor: cualquiera con las
+    // devtools abiertas podía leer la clave de cualquier participante y
+    // reescribir la quiniela de cualquiera, no solo la suya).
+    //
+    // Ahora cada participante es su PROPIO documento, y solo puede
+    // escribirlo quien demuestre ser su dueño real (mismo UID anónimo
+    // que lo creó) — la app ya no es quien decide si la clave es
+    // correcta de cara a Firestore, lo decide Firestore mismo.
+    match /registro_participants/{pid} {
+      // Lectura pública: el Ranking, Estadísticas y "¿ya hay alguien con
+      // este correo?" necesitan poder leer a todos, sin sesión especial.
+      allow read: if true;
+
+      // Crear: el documento nuevo debe declarar como ownerUid el UID de
+      // quien lo está creando (caso normal, alguien llena el wizard por
+      // primera vez) — o, si quien escribe es el admin, puede crear un
+      // documento "a nombre de" alguien más con cualquier ownerUid (o
+      // sin ninguno): esto cubre la migración del sistema legacy
+      // (runMigracionLegacy en legacy-migracion.js, que crea
+      // participantes históricos que nunca tuvieron sesión anónima) y
+      // restaurar a alguien desde la papelera (que vuelve tal cual
+      // estaba, sin un ownerUid nuevo asignado).
+      allow create: if request.auth != null
+                    && (
+                         request.resource.data.ownerUid == request.auth.uid
+                         ||
+                         request.auth.token.email == "agustingb23@gmail.com"
+                       );
+
+      // Actualizar: el dueño real (ownerUid ya guardado coincide con la
+      // sesión actual) puede tocar lo que sea de SU PROPIO documento —
+      // esto es la base de todo: guardar predicciones, marcar como
+      // enviada, etc. El admin también puede tocar cualquier documento
+      // desde su panel (regenerar clave, cambiar estado, nota interna).
+      //
+      // El tercer camino es el RE-CLAIM: alguien entra desde un
+      // dispositivo nuevo (otro navegador, celular distinto, borró
+      // cookies) y demostró conocer el nombre/correo + clave correctos
+      // en la propia interfaz (ver renderLogin en registro.js). Para
+      // que ESE caso pueda "tomar posesión" del documento sin un
+      // backend que valide la clave por fuera de las reglas, permitimos
+      // una escritura MUY acotada: solo puede tocar ownerUid/clave/
+      // fechaActualizacion (ningún otro campo — no podría tocar
+      // predicciones, nombre, nada más en esa misma escritura), Y la
+      // clave que manda debe coincidir EXACTAMENTE con la que ya estaba
+      // guardada (si no se exigiera esto, cualquiera con auth anónima
+      // podría "robar" cualquier documento solo mandando una clave
+      // inventada que coincide con sí misma).
+      allow update: if request.auth != null
+                    && (
+                         resource.data.ownerUid == request.auth.uid
+                         ||
+                         request.auth.token.email == "agustingb23@gmail.com"
+                         ||
+                         (
+                           request.resource.data.diff(resource.data).affectedKeys()
+                             .hasOnly(['ownerUid', 'clave', 'fechaActualizacion'])
+                           && request.resource.data.clave == resource.data.clave
+                         )
+                       );
+
+      // Borrar: el propio dueño puede borrar su documento (cancelar su
+      // inscripción, ver q_delete en registro.js) y el admin puede
+      // borrar el de cualquiera (mover a la papelera desde su panel,
+      // ver rgDeleteParticipantDoc() en participantes.js). En ambos
+      // casos, quien borra en Firestore también es responsable de
+      // quitar ese id de su copia local de DB.participants/predictions
+      // — eso lo hace el código JS, no esta regla.
+      allow delete: if request.auth != null
+                    && (
+                         resource.data.ownerUid == request.auth.uid
+                         ||
+                         request.auth.token.email == "agustingb23@gmail.com"
+                       );
+    }
+
+    // ── CONFIG GLOBAL + CONTADOR DE CÓDIGOS — sin datos sensibles.
+    // Cualquier sesión autenticada (anónima o admin) puede escribir: el
+    // contador de códigos (nextSeq) avanza cada vez que alguien nuevo se
+    // registra, así que tiene que ser escribible por cualquier
+    // participante, no solo el admin.
+    match /registro/meta {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+
+    // ── PAPELERA — conserva la clave en texto plano de quien se
+    // elimina (para poder restaurarlo exactamente como estaba), así que
+    // se mantiene completamente separada del resto: solo el admin puede
+    // leerla o escribirla.
+    match /registro/papelera {
+      allow read, write: if request.auth != null
+                          && request.auth.token.email == "agustingb23@gmail.com";
+    }
+  }
+}
