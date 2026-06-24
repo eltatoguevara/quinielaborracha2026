@@ -1,0 +1,485 @@
+
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800;900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script type="module">
+  // ══════════════════════════════════════════════════════════════
+  // FIREBASE — Quiniela Borracha 2026 v6.4 (Fase de Seguridad — Punto 2)
+  // Sincronización en tiempo real (Firestore) + Auth admin + Auth Anónima
+  // ══════════════════════════════════════════════════════════════
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
+  import {
+    getFirestore, doc, collection, setDoc, deleteDoc, deleteField, onSnapshot, serverTimestamp,
+    writeBatch
+  } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
+  import {
+    getAuth, signInWithEmailAndPassword, signInAnonymously, signOut, onAuthStateChanged
+  } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyDjXbvioyMPmF0w-Yc70nRrqev5-8SH7nU",
+    authDomain: "quiniela-borracha.firebaseapp.com",
+    projectId: "quiniela-borracha",
+    storageBucket: "quiniela-borracha.firebasestorage.app",
+    messagingSenderId: "341679133184",
+    appId: "1:341679133184:web:bc5ecfb18beacdfd0a7ee5",
+    measurementId: "G-G5KKQ7FBQ1"
+  };
+
+  const fbApp = initializeApp(firebaseConfig);
+  const db = getFirestore(fbApp);
+  const auth = getAuth(fbApp);
+
+  // Documento único que contiene todo el estado S de la quiniela (resultados
+  // reales, bonos, batallas) — SIN CAMBIOS, sigue siendo de escritura
+  // exclusiva del admin, como siempre.
+  const STATE_DOC = doc(db, "quiniela", "estado");
+
+  // v6.4 — Reemplaza al viejo documento único "registro/estado" (escritura
+  // pública sin ninguna validación de servidor). Ahora cada participante es
+  // su PROPIO documento en esta colección, con un campo ownerUid que las
+  // reglas de Firestore usan para exigir que solo su dueño pueda escribirlo
+  // (ver la nota de seguridad completa al final de participantes.js).
+  const PARTICIPANTS_COL = collection(db, "registro_participants");
+  // Config global (fechaCierre, switches de admin) + contador de códigos.
+  // Sin datos sensibles -> lectura pública; escritura de cualquier sesión
+  // autenticada (anónima alcanza, no hace falta ser admin).
+  const REGISTRO_META_DOC = doc(db, "registro", "meta");
+  // Participantes eliminados — conserva su clave en texto plano, así que
+  // queda en un documento separado de solo-admin (no en el público de arriba).
+  const REGISTRO_PAPELERA_DOC = doc(db, "registro", "papelera");
+
+  // Exponemos en window para que el resto del script (no-módulo) lo use
+  window.__fb = {
+    db, auth, STATE_DOC, PARTICIPANTS_COL, REGISTRO_META_DOC, REGISTRO_PAPELERA_DOC,
+    doc, collection, setDoc, deleteDoc, deleteField, writeBatch,
+    onSnapshot, serverTimestamp,
+    signInWithEmailAndPassword, signInAnonymously, signOut, onAuthStateChanged
+  };
+  // Señal de que Firebase ya está listo para usarse
+  window.dispatchEvent(new Event("firebase-ready"));
+</script>
+<link rel="stylesheet" href="styles.css?v=6.6.2">
+
+<div style="position:relative;min-height:700px;background:var(--qb-black)" id="root">
+<div class="app">
+  <div class="hdr">
+    <div class="hdr-logo" id="logo-btn" ondblclick="openLoginModal()" title="Doble clic para acceso admin" style="cursor:pointer;overflow:hidden;padding:0;background:transparent;box-shadow:none">
+      <img id="logo-img" src="" alt="QB" style="width:40px;height:40px;object-fit:contain;border-radius:8px">
+    </div>
+    <div style="flex:1" id="hdr-title-col">
+      <div class="hdr-title" id="hdr-title-row">Quiniela Borracha 2026 <span class="ver">v6.6.2</span>
+        <span id="admin-indicator" onclick="openLoginModal()" style="cursor:pointer;font-size:10px;padding:1px 6px;border-radius:4px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.08);color:rgba(255,255,255,.5);transition:all .2s;margin-left:4px" title="Admin">🔑</span>
+      </div>
+      <div class="hdr-sub" style="display:flex;align-items:center;gap:8px">
+        <span id="hdr-countries">EE.UU. · Canadá · México &nbsp;·&nbsp; 11 Jun – 19 Jul 2026</span>
+        <span id="hdr-today" style="display:none"></span>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px" id="hdr-right-col">
+      <button class="theme-toggle" onclick="toggleTheme()" id="theme-btn">☀️ Light</button>
+      <div style="display:flex;align-items:center;gap:5px" id="hdr-live-row">
+        <span id="live-badge" style="display:none;align-items:center;gap:4px;font-size:9px;font-weight:800;padding:2px 7px;border-radius:10px;background:rgba(0,200,83,.15);color:#4dde8c;border:1px solid rgba(0,200,83,.4);text-transform:uppercase;letter-spacing:.04em">🟢 En vivo</span>
+        <div class="dbadge" id="hdr-master-badge">📂 Mi Quiniela · — participantes</div>
+      </div>
+      <div style="font-size:10px;color:rgba(240,242,247,.6);margin-top:0px" id="hstat">—</div>
+    </div>
+  </div>
+  <div class="tabs">
+    <div class="tab on" onclick="tab('rank')">🏅 Ranking</div>
+    <div class="tab" onclick="tab('mm')">⚡ En vivo</div>
+    <div class="tab" onclick="tab('battles')">⚔️ Batallas</div>
+    <div class="tab admin-tab" onclick="tab('fix')" style="display:none">📅 Fixture</div>
+    <div class="tab admin-tab" onclick="tab('pred')" style="display:none">📝 Predicciones</div>
+    <div class="tab" onclick="tab('stats')">📊 Estadísticas</div>
+    <div class="tab admin-tab" onclick="tab('bonos')" style="display:none">🎁 Bonos</div>
+    <div class="tab admin-tab" onclick="tab('integ')" style="display:none">🔒 Integridad</div>
+    <div class="tab" onclick="tab('rules')">📋 Reglas</div>
+    <div class="tab" onclick="tab('registro')">📝 Mi Quiniela</div>
+    <div class="tab admin-tab" onclick="tab('admin')" style="display:none">🛠️ Admin</div>
+  </div>
+
+  <!-- Wrapper with padding for all tab content -->
+  <div style="padding:0 .75rem">
+
+  <div id="t-rank">
+    <div class="rfl">
+      <span class="sec" style="margin:0">Tabla de posiciones</span>
+      <button class="btn btn-sm" onclick="renderRank()">↻ Recalcular</button>
+      <button class="btn btn-sm btn-green" onclick="exportImage()">📸 Exportar imagen</button>
+      <span id="rank-mobile-header" style="display:none;margin-left:auto;font-size:9px;font-weight:700;color:var(--qb-muted);text-transform:uppercase;letter-spacing:.04em;padding-right:2px">Total</span>
+    </div>
+    <div id="integ-banner" style="margin-bottom:.5rem"></div>
+    <table class="rt" id="rank-table">
+      <thead><tr><th>#</th><th title="Movimiento vs snapshot activo">±</th><th>País</th><th>Participante</th><th>Básicos</th><th>Avanzado</th><th>Elim</th><th title="Bonos de último lugar">Bonos</th><th style="text-align:right">Total</th><th id="th-hoja" class="admin-only" style="display:none">Hoja</th></tr></thead>
+      <tbody id="rb"></tbody>
+    </table>
+    <div id="battles-banner"></div>
+    <!-- SNAPSHOT PANEL — solo admin -->
+    <div class="admin-only" style="display:none;margin-top:1rem;padding-top:.75rem;border-top:1px solid var(--qb-border)">
+      <div class="rfl" style="margin-bottom:.375rem">
+        <span style="font-family:var(--ff-display);font-size:12px;font-weight:700;color:var(--qb-text);text-transform:uppercase;letter-spacing:.04em">📸 Snapshots</span>
+      </div>
+      <div style="font-size:10px;color:var(--qb-muted);margin-bottom:.5rem">Guarda la posición actual como referencia para ver el movimiento ↑↓ en la tabla y en la imagen exportada.</div>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:.5rem">
+        <input type="text" id="snap-label" placeholder="Ej: Inicio jornada 3" style="flex:1;font-size:11px">
+        <button class="btn btn-blue btn-sm" onclick="takeSnapshot()">📸 Guardar</button>
+      </div>
+      <div id="snap-list"></div>
+    </div>
+  </div>
+
+  <div id="t-mm" style="display:none">
+    <div class="refresh-bar">
+      <span class="sec" style="margin:0">En vivo y próximos</span>
+      <button class="btn btn-sm btn-espn" onclick="loadMM(true)"><span id="mm-spin" style="display:inline-block">⚡</span> <span id="mm-txt">Actualizar</span></button>
+      <span class="countdown" id="mm-cd"></span>
+    </div>
+    <div id="mm-status" class="status-bar"></div>
+    <div id="mm-body"></div>
+  </div>
+
+  <!-- ═══ BATALLAS TAB — duelos diarios 1 vs 1 ═══ -->
+  <div id="t-battles" style="display:none">
+    <div class="admin-only" style="display:none;margin-bottom:1rem;padding:.75rem;border:1px solid var(--qb-border);border-radius:10px;background:var(--qb-surface)">
+      <div style="font-family:var(--ff-display);font-size:12px;font-weight:700;color:var(--qb-text);text-transform:uppercase;letter-spacing:.04em;margin-bottom:.5rem">⚔️ Armar batalla</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:.5rem">
+        <div>
+          <label style="font-size:10px;color:var(--qb-muted);display:block;margin-bottom:3px">Ranura 1</label>
+          <select id="battle-slot1-p1" style="width:100%;font-size:12px;padding:6px;border-radius:6px;border:1px solid var(--qb-border2);background:var(--qb-surface2);color:var(--qb-text)"></select>
+          <select id="battle-slot1-p2" style="width:100%;font-size:12px;padding:6px;border-radius:6px;border:1px solid var(--qb-border2);background:var(--qb-surface2);color:var(--qb-text);margin-top:4px"></select>
+          <input type="text" id="battle-slot1-name" placeholder="Nombre (opcional) — ej: David contra Goliat" style="width:100%;font-size:12px;padding:6px;border-radius:6px;border:1px solid var(--qb-border2);background:var(--qb-surface2);color:var(--qb-text);margin-top:4px;box-sizing:border-box">
+          <button class="btn btn-sm btn-blue" style="width:100%;margin-top:4px" onclick="startBattle(1)">⚔️ Iniciar duelo 1</button>
+          <button class="btn btn-sm" style="width:100%;margin-top:4px" onclick="resetBattle(1)">↻ Terminar y guardar duelo 1</button>
+        </div>
+        <div>
+          <label style="font-size:10px;color:var(--qb-muted);display:block;margin-bottom:3px">Ranura 2</label>
+          <select id="battle-slot2-p1" style="width:100%;font-size:12px;padding:6px;border-radius:6px;border:1px solid var(--qb-border2);background:var(--qb-surface2);color:var(--qb-text)"></select>
+          <select id="battle-slot2-p2" style="width:100%;font-size:12px;padding:6px;border-radius:6px;border:1px solid var(--qb-border2);background:var(--qb-surface2);color:var(--qb-text);margin-top:4px"></select>
+          <input type="text" id="battle-slot2-name" placeholder="Nombre (opcional) — ej: David contra Goliat" style="width:100%;font-size:12px;padding:6px;border-radius:6px;border:1px solid var(--qb-border2);background:var(--qb-surface2);color:var(--qb-text);margin-top:4px;box-sizing:border-box">
+          <button class="btn btn-sm btn-blue" style="width:100%;margin-top:4px" onclick="startBattle(2)">⚔️ Iniciar duelo 2</button>
+          <button class="btn btn-sm" style="width:100%;margin-top:4px" onclick="resetBattle(2)">↻ Terminar y guardar duelo 2</button>
+        </div>
+      </div>
+      <div style="font-size:10px;color:var(--qb-muted)">Se detectan automáticamente los partidos cuya hora de inicio cae hoy. El duelo se cierra solo cuando termina el último de esos partidos.</div>
+    </div>
+    <div class="inner-tabs">
+      <button class="inner-tab on" onclick="battlesTab('active')" id="btab-active">⚔️ Activas</button>
+      <button class="inner-tab" onclick="battlesTab('history')" id="btab-history">📜 Historial</button>
+    </div>
+    <div id="battles-active-wrap"><div id="battles-body"></div></div>
+    <div id="battles-history-wrap" style="display:none"></div>
+  </div>
+
+  <!-- ═══ FIXTURE TAB — sub: Grupos + Eliminatoria ═══ -->
+  <div id="t-fix" style="display:none">
+    <div class="inner-tabs">
+      <button class="inner-tab on" onclick="fixTab('grupos')" id="ftab-grupos">⚽ Fase de Grupos</button>
+      <button class="inner-tab" onclick="fixTab('elim')" id="ftab-elim">🏆 Eliminatoria</button>
+    </div>
+
+    <!-- Grupos sub-panel -->
+    <div id="fix-grupos">
+      <div class="rfl">
+        <span class="sec" style="margin:0">Grupos A–L</span>
+        <button class="btn btn-sm btn-espn" onclick="fetchESPN()"><span id="fi-spin" style="display:inline-block">⚡</span> <span id="fi-txt">ESPN Live</span></button>
+        <button class="btn btn-sm btn-green" onclick="exportFixJSON()">⬇ JSON</button>
+        <button class="btn btn-sm" onclick="document.getElementById('imp').click()">⬆ JSON</button>
+        <input type="file" id="imp" accept=".json" style="display:none" onchange="importFixJSON(this)">
+        <button class="btn btn-sm btn-red" onclick="resetFix()" style="margin-left:auto">🗑 Limpiar</button>
+      </div>
+      <div class="status-bar" id="fix-st"></div>
+      <div class="ib">Resultados desde <strong>ESPN</strong>. ESPN no sobreescribe resultados manuales — pide confirmación si hay diferencia.</div>
+      <div id="fb"></div>
+    </div>
+
+    <!-- Eliminatoria sub-panel -->
+    <div id="fix-elim" style="display:none">
+      <div class="rfl">
+        <span class="sec" style="margin:0">Eliminatoria</span>
+        <button id="btn-espn-elim" class="btn btn-sm btn-espn" onclick="fetchESPNElimChecked()"><span id="ei-spin" style="display:inline-block">⚡</span> <span id="ei-txt">ESPN Live</span></button>
+        <button class="btn btn-sm btn-purple" onclick="openTeamsEditor()">✏️ Editar llaves</button>
+        <button class="btn btn-sm btn-red" onclick="resetElim()" style="margin-left:auto">🗑 Limpiar</button>
+      </div>
+      <div class="status-bar" id="elim-st"></div>
+      <div class="ib">Los equipos de Dieciseisavos se generan automáticamente al terminar grupos, o desde ESPN / manual. Las rondas posteriores se calculan solas.</div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:.75rem">
+        <button id="btn-generar-llaves" class="btn btn-green" onclick="generarLlavesDieciseisavos()" disabled style="opacity:.5">🧮 Generar llaves de Dieciseisavos</button>
+        <button id="btn-simular" class="btn btn-sm" onclick="simularMarcadoresChecked()">🎲 Simular marcadores</button>
+        <span id="generar-status" style="font-size:10px;color:var(--qb-muted)"></span>
+      </div>
+      <div id="generate-summary" style="display:none"></div>
+      <div id="elim-body"></div>
+    </div>
+  </div>
+
+  <!-- ═══ PREDICCIONES TAB — sub: Fase de Grupos + Bracket + Avanzado ═══ -->
+  <div id="t-pred" style="display:none">
+    <div class="inner-tabs">
+      <button class="inner-tab on" onclick="predTab('grupos')" id="ptab-grupos">📋 Fase de Grupos</button>
+      <button class="inner-tab" onclick="predTab('bracket')" id="ptab-bracket">🎯 Eliminatoria</button>
+      <button class="inner-tab" onclick="predTab('avanzado')" id="ptab-avanzado">⭐ Avanzado</button>
+    </div>
+
+    <!-- Fase de grupos sub-panel -->
+    <div id="pred-grupos">
+      <div class="rfl"><span class="sec" style="margin:0">Predicciones por participante</span></div>
+      <div class="ib">Verde = acertaste · Rojo = fallaste · Número = puntos del partido</div>
+      <div id="psel" style="margin-bottom:.75rem;display:flex;gap:5px;flex-wrap:wrap"></div>
+      <div id="pb2"></div>
+    </div>
+
+    <!-- Bracket sub-panel -->
+    <div id="pred-bracket" style="display:none">
+      <div class="rfl">
+        <span class="sec" style="margin:0">Eliminatoria — Predicciones vs Realidad</span>
+        <button class="btn btn-sm" onclick="renderBracket()">↻ Actualizar</button>
+      </div>
+      <div class="ib">Muestra qué llaves acertó cada participante. Si la llave coincide se aplican las reglas básicas de puntuación.</div>
+      <div id="bsel" style="margin-bottom:.75rem;display:flex;gap:5px;flex-wrap:wrap"></div>
+      <div id="bracket-body"></div>
+    </div>
+
+    <!-- Avanzado sub-panel -->
+    <div id="pred-avanzado" style="display:none">
+      <div class="sec">Predicciones avanzadas</div>
+      <div class="ib">Ingresa los resultados reales del torneo para calcular puntos avanzados. Las predicciones especiales de cada participante están en el archivo maestro.</div>
+      <div id="ab"></div>
+    </div>
+  </div>
+
+  <div id="t-bonos" style="display:none">
+    <div class="rfl">
+      <span class="sec" style="margin:0">🎁 Bonos — Último lugar</span>
+      <div style="display:flex;gap:5px">
+        <button id="auto-close-btn" class="btn btn-sm" onclick="toggleAutoClose()"></button>
+        <button class="btn btn-sm btn-red" onclick="clearAllBonos()">🗑 Limpiar todo</button>
+      </div>
+    </div>
+    <div class="ib" id="bonos-mode-desc" style="margin-bottom:.5rem"></div>
+    <div id="bonos-body"></div>
+  </div>
+
+  <div id="t-stats" style="display:none">
+    <div style="display:flex;gap:0;border-bottom:1px solid var(--qb-border);margin-bottom:.875rem">
+      <button class="stat-tab on" onclick="statTab('cards')" id="stab-cards">🃏 Tarjetas</button>
+      <button class="stat-tab" onclick="statTab('popular')" id="stab-popular">🗳 Predicciones</button>
+      <button class="stat-tab" onclick="statTab('goal')" id="stab-goal">⚽ Goleadores</button>
+    </div>
+    <div id="stat-cards"></div>
+    <div id="stat-popular" style="display:none"></div>
+    <div id="stat-goal" style="display:none">
+      <div class="rfl">
+        <span class="sec" style="margin:0">Goleadores del Mundial</span>
+        <button class="btn btn-sm btn-espn" onclick="fetchESPNScorers()">⚡ ESPN en vivo</button>
+      </div>
+      <div id="gb"></div>
+      <div style="margin-top:.875rem;padding-top:.75rem;border-top:.5px solid var(--qb-border)">
+        <div class="sec">Agregar manualmente</div>
+        <div class="rfl">
+          <input type="text" id="sn" placeholder="Jugador" style="width:120px">
+          <input type="text" id="sc2" placeholder="País" style="width:100px">
+          <input type="number" id="sg" placeholder="Goles" min="1" style="width:55px">
+          <button class="btn btn-blue btn-sm" onclick="addScorer()">+ Agregar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+
+  <div id="t-integ" style="display:none">
+    <div class="rfl">
+      <span class="sec" style="margin:0">🔒 Panel de Integridad</span>
+    </div>
+    <div class="ib">Verifica resultados, gestiona backups y administra la quiniela.</div>
+
+    <!-- Backup/Restore -->
+    <div style="border:1px solid var(--qb-border);border-radius:10px;padding:.75rem;margin-bottom:.75rem;background:var(--qb-surface)">
+      <div style="font-family:var(--ff-display);font-size:12px;font-weight:700;color:var(--qb-text);text-transform:uppercase;letter-spacing:.04em;margin-bottom:.5rem">💾 Backup / Restore</div>
+      <div style="font-size:11px;color:var(--qb-muted);margin-bottom:.625rem">Exporta todos los resultados, bonos y snapshots a un archivo JSON. Impórtalo en otro dispositivo o para recuperar datos.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-sm btn-green" onclick="exportBackupJSON()">📥 Exportar backup</button>
+        <button class="btn btn-sm btn-blue" onclick="document.getElementById('backup-imp').click()">📤 Importar backup</button>
+        <input type="file" id="backup-imp" accept=".json" style="display:none" onchange="importBackupJSON(this)">
+      </div>
+      <div id="backup-status" style="margin-top:.5rem;font-size:11px;color:var(--qb-muted)"></div>
+    </div>
+
+    <!-- Integridad -->
+    <div style="border:1px solid var(--qb-border);border-radius:10px;padding:.75rem;background:var(--qb-surface)">
+      <div style="font-family:var(--ff-display);font-size:12px;font-weight:700;color:var(--qb-text);text-transform:uppercase;letter-spacing:.04em;margin-bottom:.5rem">🔐 Verificación de datos</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:.625rem">
+        <button class="btn btn-sm btn-purple" onclick="runChecksumVerify()">🔐 Verificar checksums</button>
+        <button class="btn btn-sm" onclick="runScoreValidation()">✅ Validar resultados</button>
+        <button class="btn btn-sm btn-red" onclick="clearCorrupted()">🗑 Limpiar corrompidos</button>
+      </div>
+      <div id="integ-results"></div>
+    </div>
+  </div>
+
+  <div id="t-rules" style="display:none">
+    <div class="sec">Reglas básicas — Fase de Grupos</div>
+    <div id="rbasic"></div>
+
+    <div class="sec" style="margin-top:.875rem">Reglas avanzadas</div>
+    <div id="radv"></div>
+
+    <div class="sec" style="margin-top:.875rem">Reglas de eliminatoria</div>
+    <div class="ib" style="margin-bottom:.5rem">Aplica para Dieciseisavos, Octavos, Cuartos, Semis y Final. Si aciertas la llave, sigues jugando con las mismas reglas de puntuación de 1ª Fase.</div>
+    <div id="relim"></div>
+
+    <div class="sec" style="margin-top:.875rem">⚠️ Bonos de último lugar</div>
+    <div class="ib warn" style="margin-bottom:.5rem"><strong>* Los puntos del último lugar</strong> aplican solo una vez termina la fase correspondiente. No se cuentan puntos de llaves de la siguiente fase al momento del cierre.</div>
+    <div id="rlast"></div>
+  </div>
+
+  <!-- v6.0 (Fase 1) — Módulo "Mi Quiniela": registro/edición de participantes
+       portado desde registro-quiniela_1_0.html.
+       v6.6.1 — Antes tenía su propia mini-nav interna (Inicio/Admin, clases
+       rg-tab/rg-tabs). Ahora Admin es una pestaña más del menú principal
+       (ver #t-admin abajo) y Mi Quiniela muestra la pantalla del
+       participante directo, sin sub-nav. -->
+  <div id="t-registro" class="rg-scope" style="display:none">
+    <div id="rg-content"></div>
+  </div>
+
+  <!-- v6.6.1 — Panel Admin, antes vivía adentro de Mi Quiniela como
+       sub-pestaña (#rg-tabs). Mismo renderAdmin()/registro.js de siempre,
+       solo que ahora pinta en #admin-content en vez de #rg-content. -->
+  <div id="t-admin" class="rg-scope" style="display:none">
+    <div id="admin-content"></div>
+  </div>
+  </div><!-- /padding wrapper -->
+</div>
+
+<!-- Modal editor de equipos 1/16 -->
+<div class="overlay" id="teams-modal" style="display:none" onclick="if(event.target===this)closeTeamsEditor()">
+  <div style="background:var(--qb-surface);border:1px solid var(--qb-border2);border-radius:12px;padding:1.25rem;width:min(95%,560px);margin:auto;max-height:90vh;overflow-y:auto">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.875rem">
+      <div>
+        <div style="font-family:var(--ff-display);font-size:16px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:var(--qb-text)">✏️ Editar equipos — Dieciseisavos</div>
+        <div style="font-size:11px;color:var(--qb-muted2);margin-top:2px">Ingresa los 32 países que clasificaron. Los equipos de rondas posteriores se calculan solos.</div>
+      </div>
+      <button onclick="closeTeamsEditor()" style="padding:5px 10px;font-family:var(--ff-display);font-size:11px;font-weight:700;border:1px solid var(--qb-border2);border-radius:6px;cursor:pointer;background:var(--qb-surface2);color:var(--qb-text)">✕</button>
+    </div>
+    <div id="teams-editor-body"></div>
+    <div style="display:flex;gap:8px;margin-top:1rem;flex-wrap:wrap">
+      <button onclick="saveTeamsEditor()" class="btn btn-green">✓ Guardar llaves</button>
+      <button onclick="closeTeamsEditor()" class="btn">Cancelar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal de conflicto ESPN -->
+<div class="overlay" id="conflict-overlay" style="display:none" onclick="if(event.target===this)closeConflict()">
+  <div class="conflict-modal">
+    <div style="font-family:var(--ff-display);font-size:16px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:var(--qb-yellow);margin-bottom:.75rem">⚠️ Conflicto de resultado</div>
+    <div id="conflict-body" style="font-size:12px;color:var(--qb-muted2);margin-bottom:1rem;line-height:1.7"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-green btn-sm" id="conflict-keep" onclick="resolveConflict('keep')">✓ Mantener manual</button>
+      <button class="btn btn-espn btn-sm" id="conflict-espn" onclick="resolveConflict('espn')">⚡ Usar ESPN</button>
+      <button class="btn btn-sm" onclick="closeConflict()">Cancelar</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="exp-modal" style="display:none" onclick="if(event.target===this)closeExp()">
+  <div class="exp-box">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.875rem">
+      <div>
+        <div style="font-family:var(--ff-display);font-size:16px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:var(--qb-text)">📸 Exportar tabla</div>
+        <div style="font-size:11px;color:var(--qb-muted);margin-top:2px">PNG listo para WhatsApp</div>
+      </div>
+      <button onclick="closeExp()" style="padding:5px 10px;font-family:var(--ff-display);font-size:11px;font-weight:700;border:1px solid var(--qb-border2);border-radius:6px;cursor:pointer;background:var(--qb-surface2);color:var(--qb-text)">✕</button>
+    </div>
+    <div id="exp-preview-wrap" style="border-radius:8px;overflow:hidden;margin-bottom:1rem;background:#111"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button onclick="downloadImg()" id="btn-dl" class="btn btn-green">⬇️ Descargar PNG</button>
+      <button onclick="copyImg()" id="btn-cp" class="btn btn-blue">📋 Copiar imagen</button>
+    </div>
+    <div style="font-size:11px;color:var(--qb-muted);margin-top:.5rem" id="exp-status"></div>
+    <div class="progress-bar" id="prog-wrap"><div class="progress-fill" id="prog"></div></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<!-- ═══ LOGIN MODAL ═══ -->
+<div id="login-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:9999;align-items:center;justify-content:center;padding:1rem">
+  <div style="background:var(--qb-surface);border-radius:16px;padding:1.5rem;width:100%;max-width:340px;border:1px solid var(--qb-border2);box-shadow:0 24px 64px rgba(0,0,0,.6)">
+    <div style="text-align:center;margin-bottom:1.25rem">
+      <div style="font-size:36px;margin-bottom:.5rem">🔐</div>
+      <div style="font-family:var(--ff-display);font-size:15px;font-weight:900;color:var(--qb-text);text-transform:uppercase;letter-spacing:.06em">Acceso Administrador</div>
+    </div>
+    <input type="email" id="login-email" placeholder="Correo"
+      style="width:100%;padding:10px 12px;font-size:16px;border:1px solid var(--qb-border2);border-radius:8px;background:var(--qb-surface2);color:var(--qb-text);margin-bottom:.625rem;box-sizing:border-box;outline:none"
+      onkeydown="if(event.key==='Enter')document.getElementById('login-pwd').focus()" autocomplete="username">
+    <input type="password" id="login-pwd" placeholder="Contraseña"
+      style="width:100%;padding:10px 12px;font-size:16px;border:1px solid var(--qb-border2);border-radius:8px;background:var(--qb-surface2);color:var(--qb-text);margin-bottom:.625rem;box-sizing:border-box;outline:none"
+      onkeydown="if(event.key==='Enter')submitLogin()" autocomplete="current-password">
+    <div id="login-error" style="font-size:11px;color:#ff8080;margin-bottom:1rem;min-height:16px;text-align:center"></div>
+    <div style="display:flex;gap:8px">
+      <button onclick="document.getElementById('login-modal').style.display='none'" style="flex:1;padding:8px;font-size:12px;border:1px solid var(--qb-border2);border-radius:8px;cursor:pointer;background:var(--qb-surface2);color:var(--qb-muted)">Cancelar</button>
+      <button id="login-submit-btn" onclick="submitLogin()" style="flex:2;padding:8px;font-size:13px;font-weight:800;border:none;border-radius:8px;cursor:pointer;background:var(--qb-blue);color:#fff">Entrar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ EDIT PARTICIPANT MODAL ═══ -->
+<div id="ep-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:8000;align-items:center;justify-content:center;padding:1rem">
+  <div style="background:var(--qb-surface);border-radius:14px;padding:1.25rem;width:100%;max-width:380px;border:1px solid var(--qb-border)">
+    <div style="font-family:var(--ff-display);font-size:15px;font-weight:800;color:var(--qb-text);margin-bottom:.875rem">✏️ Editar participante</div>
+    <input type="hidden" id="ep-orig-name">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:.5rem"><label style="font-size:11px;color:var(--qb-muted);width:60px">Nombre</label><input type="text" id="ep-name" style="flex:1;padding:5px 8px;border:1px solid var(--qb-border2);border-radius:6px;background:var(--qb-surface2);color:var(--qb-text);font-size:12px"></div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:.5rem"><label style="font-size:11px;color:var(--qb-muted);width:60px">País</label><input type="text" id="ep-country" placeholder="Ej: Venezuela" style="flex:1;padding:5px 8px;border:1px solid var(--qb-border2);border-radius:6px;background:var(--qb-surface2);color:var(--qb-text);font-size:12px"></div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:.875rem"><label style="font-size:11px;color:var(--qb-muted);width:60px">Ciudad</label><input type="text" id="ep-city" style="flex:1;padding:5px 8px;border:1px solid var(--qb-border2);border-radius:6px;background:var(--qb-surface2);color:var(--qb-text);font-size:12px"></div>
+    <div style="display:flex;gap:8px">
+      <button onclick="closeEditParticipant()" style="flex:1;padding:7px;font-size:12px;border:1px solid var(--qb-border2);border-radius:8px;cursor:pointer;background:var(--qb-surface2);color:var(--qb-muted)">Cancelar</button>
+      <button onclick="saveEditParticipant()" style="flex:2;padding:7px;font-size:13px;font-weight:800;border:none;border-radius:8px;cursor:pointer;background:var(--qb-blue);color:#fff">✓ Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MÓDULO REGISTRO (v6.0, Fase 1) — modales y poster de PDF ═══
+     Van fuera de #t-registro (a nivel raíz, hermanos de .app) a propósito:
+     #t-registro queda con display:none cuando no es el tab activo, y un
+     ancestro oculto se lleva consigo a sus descendientes — estos overlays
+     necesitan poder mostrarse encima de cualquier tab, y #pdfPoster necesita
+     seguir en el árbol de render (aunque esté fuera de pantalla) para que
+     html2canvas pueda capturarlo. Mismo patrón que login-modal/ep-modal. -->
+<div class="modal-overlay" id="exitModal" style="display:none">
+  <div class="modal-box">
+    <div class="modal-title">Tienes cambios sin guardar</div>
+    <div class="modal-text">¿Qué deseas hacer antes de salir de esta sección?</div>
+    <div class="modal-btns">
+      <button class="rg-btn rg-btn-primary rg-btn-block" id="em_save_exit">Guardar y salir</button>
+      <button class="rg-btn rg-btn-ghost rg-btn-block" id="em_continue">Continuar editando</button>
+      <button class="rg-btn rg-btn-danger rg-btn-block" id="em_discard">Salir sin guardar</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="blockModal" style="display:none">
+  <div class="modal-box">
+    <div class="modal-title">⚠️ Te faltan resultados</div>
+    <div class="modal-text" id="blockModalText"></div>
+    <div class="modal-btns">
+      <button class="rg-btn rg-btn-gold rg-btn-block" id="block_goto">📍 Ir al pendiente</button>
+      <button class="rg-btn rg-btn-ghost rg-btn-block" id="block_ok">Entendido</button>
+    </div>
+  </div>
+</div>
+
+<div id="pdfPoster"></div>
+
+<script src="participantes.js?v=6.6"></script>
+<script src="legacy-migracion.js?v=6.6"></script>
+<script src="utils.js?v=6.6"></script>
+<script src="scoring.js?v=6.6"></script>
+<script src="app.js?v=6.6.1"></script>
+<script src="registro.js?v=6.6.1"></script>
