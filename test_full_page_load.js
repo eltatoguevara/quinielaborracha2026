@@ -13,6 +13,7 @@ const FILES_IN_ORDER = [
   "legacy-migracion.js",
   "utils.js",
   "scoring.js",
+  "totp.js",
   "app.js",
   "registro.js"
 ];
@@ -57,7 +58,18 @@ bridge.textContent = `
     runMigracionFn: typeof runMigracionLegacy,
     pushStateFn: typeof pushStateToFirestore,
     hasOldEchoFlag: typeof _suppressNextFirestoreEcho !== "undefined",
-    hasNewEchoVar: typeof _lastPushedStateJSON !== "undefined"
+    hasNewEchoVar: typeof _lastPushedStateJSON !== "undefined",
+    isPending2FAFn: typeof isPending2FA,
+    isPending2FANow: (typeof isPending2FA === "function") ? isPending2FA() : undefined,
+    verifyTOTPCodeFn: typeof verifyTOTPCode,
+    generateTOTPSecretFn: typeof generateTOTPSecret,
+    generateBackupCodeFn: typeof generateBackupCode,
+    sha256HexFn: typeof sha256Hex,
+    checkTrustedDeviceFn: typeof checkTrustedDevice2FA,
+    establishTrustedDeviceFn: typeof establishTrustedDevice2FA,
+    resolveAdmin2FAFn: typeof resolveAdmin2FA,
+    submit2FACodeFn: typeof submit2FACode,
+    afterAdminStatusResolvedFn: typeof _afterAdminStatusResolved
   };
 `;
 window.document.body.appendChild(bridge);
@@ -77,6 +89,17 @@ check("runMigracionLegacy() existe (legacy-migracion.js)", t.runMigracionFn === 
 check("pushStateToFirestore() existe (app.js)", t.pushStateFn === "function");
 check("La bandera vieja _suppressNextFirestoreEcho YA NO existe", t.hasOldEchoFlag === false);
 check("La nueva variable _lastPushedStateJSON existe (mecanismo de eco por contenido)", t.hasNewEchoVar === true);
+check("isPending2FA() existe (app.js, v7.1)", t.isPending2FAFn === "function");
+check("isPending2FA() devuelve false sin sesión (nadie logueado)", t.isPending2FANow === false);
+check("verifyTOTPCode() existe (totp.js)", t.verifyTOTPCodeFn === "function");
+check("generateTOTPSecret() existe (totp.js)", t.generateTOTPSecretFn === "function");
+check("generateBackupCode() existe (totp.js)", t.generateBackupCodeFn === "function");
+check("sha256Hex() existe (totp.js)", t.sha256HexFn === "function");
+check("checkTrustedDevice2FA() existe (app.js, v7.1)", t.checkTrustedDeviceFn === "function");
+check("establishTrustedDevice2FA() existe (app.js, v7.1)", t.establishTrustedDeviceFn === "function");
+check("resolveAdmin2FA() existe (app.js, v7.1)", t.resolveAdmin2FAFn === "function");
+check("submit2FACode() existe (app.js, v7.1)", t.submit2FACodeFn === "function");
+check("_afterAdminStatusResolved() existe (app.js, v7.1)", t.afterAdminStatusResolvedFn === "function");
 
 console.log(`\n=== RESULTADO: ${ok ? "CARGA COMPLETA OK ✅" : "HAY ERRORES ❌"} ===`);
 process.exit(ok ? 0 : 1);

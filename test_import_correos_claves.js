@@ -15,7 +15,7 @@ const { JSDOM } = require("jsdom");
 const fs = require("fs");
 const path = require("path");
 
-const FILES = ["participantes.js", "legacy-migracion.js", "utils.js", "scoring.js", "app.js", "registro.js"];
+const FILES = ["participantes.js", "legacy-migracion.js", "utils.js", "scoring.js", "totp.js", "app.js", "registro.js"];
 
 let html = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
 html = html.replace(/<script[^>]*src=[^>]*><\/script>/g, "");
@@ -23,6 +23,11 @@ html = html.replace(/<script type="module">[\s\S]*?<\/script>/g, "");
 
 const dom = new JSDOM(html, { url: "https://example.org/", runScripts: "dangerously" });
 const { window } = dom;
+// jsdom no implementa crypto.subtle (SubtleCrypto) -- en un navegador real
+// siempre está disponible; para poder probar de verdad sha256Hex/
+// verifyTOTPCode (totp.js, v7.1) acá, usamos el WebCrypto real de Node.
+const { webcrypto } = require("crypto");
+Object.defineProperty(window, "crypto", { value: webcrypto, configurable: true });
 window.confirm = () => true;
 window.alert = () => {};
 window.URL.createObjectURL = () => "blob:fake";
@@ -38,6 +43,10 @@ const PARTICIPANTS_COL = { __col: "registro_participants" };
 const PRIVADO_COL = { __col: "registro_privado" };
 const REGISTRO_META_DOC = { __doc: "registro/meta" };
 const REGISTRO_PAPELERA_DOC = { __doc: "registro/papelera" };
+// v7.1 — secreto de prueba fijo (no necesita ser real, solo necesita ser
+// el mismo que usamos para calcular el código TOTP esperado más abajo).
+const TEST_TOTP_SECRET = "JBSWY3DPEHPK3PXP";
+const ADMIN2FA_DOC = { __doc: "registro/admin2fa" };
 
 function fakeDoc(parent, id) {
   if (parent !== PARTICIPANTS_COL && parent !== PRIVADO_COL) {
@@ -61,8 +70,14 @@ function keyOf(target) {
 window.__fb = {
   db: {}, auth: { get currentUser() { return currentUser; } },
   PARTICIPANTS_COL, PRIVADO_COL, REGISTRO_META_DOC, REGISTRO_PAPELERA_DOC,
+  ADMIN2FA_DOC,
   doc: fakeDoc,
-  getDoc: () => Promise.resolve({ exists: () => false, data: () => ({}) }),
+  getDoc: (ref) => {
+    if (ref === ADMIN2FA_DOC) {
+      return Promise.resolve({ exists: () => true, data: () => ({ secret: TEST_TOTP_SECRET, trustedDevices: {} }) });
+    }
+    return Promise.resolve({ exists: () => false, data: () => ({}) });
+  },
   query: (x) => x, where: () => ({}),
   setDoc: () => Promise.resolve(),
   deleteDoc: () => Promise.resolve(),
@@ -112,6 +127,12 @@ bridgeScript.textContent = `
 window.__test = {
   getDB: () => DB,
   isAdmin: () => (typeof isAdmin === "function" ? isAdmin() : undefined),
+  isPending2FA: () => (typeof isPending2FA === "function" ? isPending2FA() : undefined),
+  getTOTPCode: (secret) => getTOTPCode(secret),
+  fillAndSubmit2FACode: async (code) => {
+    document.getElementById("login-2fa-code").value = code;
+    await submit2FACode();
+  },
   importarCorreosClaves: (file) => window.importarCorreosClaves(file),
   getLastToast: () => { const t = document.getElementById("toast"); return t ? t.textContent : null; },
 };
@@ -142,6 +163,13 @@ T.getDB().configGlobal = T.getDB().configGlobal || {};
   // ── Paso 2: ahora entra el admin real (no anónimo) ──
   currentUser = { uid: "admin-uid", isAnonymous: false };
   authCb && authCb(currentUser);
+  await new Promise((r) => setTimeout(r, 10));
+  check("Caso 2a (v7.1): tras correo+contraseña, todavía NO es admin (falta 2FA)", T.isAdmin() === false);
+  check("Caso 2a (v7.1): isPending2FA() es true (modal de código pendiente)", T.isPending2FA() === true);
+
+  // ── Paso 2b (v7.1): resuelve el segundo factor con un código TOTP válido ──
+  const validCode = await T.getTOTPCode(TEST_TOTP_SECRET);
+  await T.fillAndSubmit2FACode(validCode);
   await new Promise((r) => setTimeout(r, 10));
   check("Caso 2: isAdmin() ahora es true", T.isAdmin() === true);
   check("Caso 2 (FIX #1): el listener de 'privado' SÍ se conectó al pasar a admin", (snapshotCbs.privado || []).length >= 1);

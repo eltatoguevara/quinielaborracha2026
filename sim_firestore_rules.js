@@ -108,6 +108,13 @@ function simAllowPapelera(auth) {
   return !!auth && auth.email === ADMIN_EMAIL;
 }
 
+// ════════════════════════════════════════════════════════════════
+// registro/admin2fa (v7.1) — mismo patrón que papelera: solo admin
+// ════════════════════════════════════════════════════════════════
+function simAllowAdmin2fa(auth) {
+  return !!auth && auth.email === ADMIN_EMAIL;
+}
+
 let pass = 0, fail = 0;
 function check(label, condition) {
   if (condition) { console.log("✅ " + label); pass++; }
@@ -295,6 +302,16 @@ check("Solo el admin puede leer/escribir la papelera -> permitido para admin",
   simAllowPapelera({ uid: "admin-uid", isAnonymous: false, email: ADMIN_EMAIL }));
 check("Un participante normal NO puede leer/escribir la papelera -> rechazado",
   !simAllowPapelera({ uid: "anon-1", isAnonymous: true }));
+
+console.log("\n=== ADMIN2FA (v7.1) — secreto TOTP + navegadores de confianza ===");
+check("El admin puede leer/escribir su propio secreto 2FA -> permitido",
+  simAllowAdmin2fa({ uid: "admin-uid", isAnonymous: false, email: ADMIN_EMAIL }));
+check("Un participante anónimo NO puede leer el secreto 2FA -> rechazado",
+  !simAllowAdmin2fa({ uid: "anon-1", isAnonymous: true }));
+check("Alguien autenticado con OTRO correo (no el admin) NO puede leer el secreto 2FA -> rechazado",
+  !simAllowAdmin2fa({ uid: "otro-uid", isAnonymous: false, email: "otro@example.com" }));
+check("Sin sesión, nadie puede leer/escribir el secreto 2FA -> rechazado",
+  !simAllowAdmin2fa(null));
 
 console.log(`\n=== RESULTADO: ${pass} pasaron, ${fail} fallaron ===`);
 process.exit(fail === 0 ? 0 : 1);
