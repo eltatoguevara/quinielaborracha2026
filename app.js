@@ -2440,6 +2440,28 @@ function equiposConocidosElim(pid){
   return getRealElimTeams(pid);
 }
 
+// v7.6 — Versión "eliminatoria" de parseESPNEvent() (utils.js), usada
+// SOLO por loadMM()/renderMM() (el mosaico EN VIVO/Próximos de portada).
+// parseESPNEvent() identifica el partido por par de abreviaturas de país
+// (ESPN_ABBR_MAP), que solo cubre los 72 partidos FIJOS de grupos — por
+// eso el mosaico se quedó "mudo" al entrar a eliminatoria, ya que ningún
+// cruce de bracket está en ese mapa. Acá identificamos por gameId fijo
+// (ESPN_GAMEID_TO_PID), igual que ya hace fetchESPNElim() para guardar
+// resultados. Es de solo lectura — no toca S.elimTeams ni S.elimScores.
+function parseESPNElimEvent(ev){
+  const pid=ESPN_GAMEID_TO_PID[String(ev.id)];
+  if(!pid)return null;
+  const comp=ev.competitions?.[0]||{};const comps=comp.competitors||[];
+  if(comps.length<2)return null;
+  const home=comps.find(c=>c.homeAway==="home")||comps[0];
+  const away=comps.find(c=>c.homeAway==="away")||comps[1];
+  const hN=espnNameES(home.team?.displayName||home.team?.shortDisplayName||"");
+  const aN=espnNameES(away.team?.displayName||away.team?.shortDisplayName||"");
+  const st=ev.status||comp.status;const state=st?.type?.state||"pre";const clock=st?.displayClock||"";
+  const homeScore=parseInt(home.score)||0;const awayScore=parseInt(away.score)||0;
+  return{pid,state,clock,homeScore,awayScore,hN,aN};
+}
+
 async function fetchESPNElim(){
   const sp=document.getElementById("ei-spin");const tx=document.getElementById("ei-txt");
   if(sp)sp.classList.add("spin");if(tx)tx.textContent="Cargando...";
@@ -3021,7 +3043,13 @@ async function loadMM(showSpinner=false){
     const d2=`${tmrw.getFullYear()}${pad(tmrw.getMonth()+1)}${pad(tmrw.getDate())}`;
     const evts=await fetchAllDates([d1,d2]);
     const now=new Date().toLocaleTimeString("es",{hour:"2-digit",minute:"2-digit"});
-    const parsed=evts.map(ev=>({ev,p:parseESPNEvent(ev)})).filter(x=>x.p);
+    const parsed=evts.map(ev=>{
+      const pg=parseESPNEvent(ev);
+      if(pg)return{ev,p:pg,isElim:false};
+      const pe=parseESPNElimEvent(ev);
+      if(pe)return{ev,p:pe,isElim:true};
+      return null;
+    }).filter(Boolean);
     const liveOnes=parsed.filter(x=>x.p.state==="in");
     const preOnes=parsed.filter(x=>x.p.state==="pre").sort((a,b)=>new Date(a.ev.date)-new Date(b.ev.date));
     if(statusEl)statusEl.innerHTML=`<span class="sbadge info">ESPN · ${now}</span>${liveOnes.length?`<span class="sbadge" style="background:rgba(212,0,26,.18);color:#ff8080;border:1px solid rgba(212,0,26,.4)"><span class="ldot" style="width:5px;height:5px;margin-right:2px"></span>${liveOnes.length} en vivo</span>`:""}`;
@@ -3031,30 +3059,49 @@ async function loadMM(showSpinner=false){
 }
 
 function predGroups(mid){const g={};PL.forEach(name=>{const p=MD[mid]?.preds[name];if(!p)return;const k=`${p.h}-${p.a}`;if(!g[k])g[k]=[];g[k].push(sn(name));});return g;}
+function predGroupsElim(pid){const g={};PL.forEach(name=>{const p=elimPred(name,pid);if(!p)return;const k=`${p.h}-${p.a}`;if(!g[k])g[k]=[];g[k].push(sn(name));});return g;}
 
 function renderMM(liveList,preList){
   const body=document.getElementById("mm-body");if(!body)return;
   const showLive=liveList;const showNext=preList.slice(0,4);let html="";
-  function buildCard(parsed,ev,isLive){
-    const mid=parsed.mid;const g=MGMAP[mid]||"";const lbl=MD[mid]?.lbl||"";
-    const pts=lbl.split(" vs ");const hN=(pts[0]||"").trim();const aN=(pts[1]||"").trim();
-    const hF=getFlag(g,hN);const aF=getFlag(g,aN);
-    const pgs=predGroups(mid);const sorted=Object.entries(pgs).sort((a,b)=>b[1].length-a[1].length);
+  function buildCard(parsed,ev,isLive,isElim){
+    let hN,aN,hF,aF,pgs,tagLive,tagNext;
+    if(isElim){
+      const pid=parsed.pid;
+      const round=ELIM_ROUNDS.find(r=>r.ids.includes(pid));
+      const roundLbl=round?round.lbl:"Eliminatoria";
+      const real=getRealElimTeams(pid);
+      hN=real?real.h:parsed.hN;aN=real?real.a:parsed.aN;
+      hF=getFlag(undefined,hN);aF=getFlag(undefined,aN);
+      pgs=predGroupsElim(pid);
+      tagLive=`${roundLbl} · P${pid}`;
+      tagNext=`${roundLbl} · ${hN} vs ${aN}`;
+    }else{
+      const mid=parsed.mid;const g=MGMAP[mid]||"";const lbl=MD[mid]?.lbl||"";
+      const pts=lbl.split(" vs ");hN=(pts[0]||"").trim();aN=(pts[1]||"").trim();
+      hF=getFlag(g,hN);aF=getFlag(g,aN);
+      pgs=predGroups(mid);
+      tagLive=`Grupo ${g} · P${mid}`;
+      tagNext=`Grupo ${g} · ${lbl}`;
+    }
+    const sorted=Object.entries(pgs).sort((a,b)=>b[1].length-a[1].length);
     if(isLive){
-      const hs=parsed.homeScore;const as=parsed.awayScore;const curKey=`${hs}-${as}`;
+      let hs=parsed.homeScore,as=parsed.awayScore;
+      if(isElim&&n(hN)===n(parsed.aN)&&n(aN)===n(parsed.hN)){const t=hs;hs=as;as=t;} // ESPN reportó h/a invertido vs equipo guardado
+      const curKey=`${hs}-${as}`;
       const predsHtml=sorted.map(([score,names])=>{const hit=score===curKey;
         return`<div class="pred-row"><div class="pred-row-hdr"><span class="spill ${hit?"match":""}">${score.replace("-"," – ")}</span><span class="cpill">${names.length}</span>${hit?`<span style="font-size:10px;color:#15803d;font-weight:500">← actual</span>`:""}</div><div class="names">${names.map(n=>`<span class="nchip ${hit?"hit":""}">${n}</span>`).join("")}</div></div>`;
       }).join("")||`<div style="font-size:11px;color:var(--qb-muted);padding:4px 0">Sin predicciones</div>`;
-      return`<div class="live-card is-live"><div class="live-hdr"><div style="display:flex;align-items:center;gap:6px"><span class="ldot"></span><span style="font-family:var(--ff-display);font-size:12px;font-weight:700;letter-spacing:.04em;color:var(--qb-red);text-transform:uppercase">EN VIVO</span>${parsed.clock?`<span style="font-size:11px;color:var(--qb-muted)">${parsed.clock}'</span>`:""}</div><span style="font-size:10px;color:var(--qb-muted)">Grupo ${g} · P${mid}</span></div><div class="scoreboard"><div class="live-team"><span class="live-team-flag">${hF}</span><span class="live-team-name">${hN}</span></div><div class="live-score red">${hs} – ${as}</div><div class="live-team"><span class="live-team-flag">${aF}</span><span class="live-team-name">${aN}</span></div></div><div style="padding:0 14px 6px;font-family:var(--ff-display);font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--qb-muted);text-transform:uppercase">Predicciones de los 27</div><div class="pred-section">${predsHtml}</div></div>`;
+      return`<div class="live-card is-live"><div class="live-hdr"><div style="display:flex;align-items:center;gap:6px"><span class="ldot"></span><span style="font-family:var(--ff-display);font-size:12px;font-weight:700;letter-spacing:.04em;color:var(--qb-red);text-transform:uppercase">EN VIVO</span>${parsed.clock?`<span style="font-size:11px;color:var(--qb-muted)">${parsed.clock}'</span>`:""}</div><span style="font-size:10px;color:var(--qb-muted)">${tagLive}</span></div><div class="scoreboard"><div class="live-team"><span class="live-team-flag">${hF}</span><span class="live-team-name">${hN}</span></div><div class="live-score red">${hs} – ${as}</div><div class="live-team"><span class="live-team-flag">${aF}</span><span class="live-team-name">${aN}</span></div></div><div style="padding:0 14px 6px;font-family:var(--ff-display);font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--qb-muted);text-transform:uppercase">Predicciones de los 27</div><div class="pred-section">${predsHtml}</div></div>`;
     }else{
       const ko=new Date(ev.date).toLocaleTimeString("es",{hour:"2-digit",minute:"2-digit"});
       const koDate=new Date(ev.date).toLocaleDateString("es",{weekday:"short",day:"numeric",month:"short"});
       const predsHtml=sorted.map(([score,names])=>`<div class="pred-row"><div class="pred-row-hdr"><span class="spill">${score.replace("-"," – ")}</span><span class="cpill">${names.length}</span></div><div class="names">${names.map(n=>`<span class="nchip">${n}</span>`).join("")}</div></div>`).join("");
-      return`<div class="live-card"><div class="live-hdr"><span style="font-family:var(--ff-display);font-size:12px;font-weight:700;letter-spacing:.03em;color:var(--qb-text)">Grupo ${g} · ${lbl}</span><span style="font-size:11px;color:var(--qb-muted)">⏱ ${ko} · ${koDate}</span></div><div class="scoreboard" style="padding:13px 14px 8px"><div class="live-team"><span class="live-team-flag">${hF}</span><span class="live-team-name">${hN}</span></div><div class="live-score" style="font-family:var(--ff-display);font-size:28px;font-weight:900;color:var(--qb-muted)">VS</div><div class="live-team"><span class="live-team-flag">${aF}</span><span class="live-team-name">${aN}</span></div></div>${predsHtml?`<div style="padding:0 14px 6px;font-family:var(--ff-display);font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--qb-muted);text-transform:uppercase">Predicciones</div><div class="pred-section">${predsHtml}</div>`:""}</div>`;
+      return`<div class="live-card"><div class="live-hdr"><span style="font-family:var(--ff-display);font-size:12px;font-weight:700;letter-spacing:.03em;color:var(--qb-text)">${tagNext}</span><span style="font-size:11px;color:var(--qb-muted)">⏱ ${ko} · ${koDate}</span></div><div class="scoreboard" style="padding:13px 14px 8px"><div class="live-team"><span class="live-team-flag">${hF}</span><span class="live-team-name">${hN}</span></div><div class="live-score" style="font-family:var(--ff-display);font-size:28px;font-weight:900;color:var(--qb-muted)">VS</div><div class="live-team"><span class="live-team-flag">${aF}</span><span class="live-team-name">${aN}</span></div></div>${predsHtml?`<div style="padding:0 14px 6px;font-family:var(--ff-display);font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--qb-muted);text-transform:uppercase">Predicciones</div><div class="pred-section">${predsHtml}</div>`:""}</div>`;
     }
   }
-  showLive.forEach(({ev,p})=>{html+=buildCard(p,ev,true);});
-  if(showNext.length){if(showLive.length)html+=`<div style="font-family:var(--ff-display);font-size:10px;font-weight:700;letter-spacing:.07em;color:var(--qb-muted);text-transform:uppercase;margin:4px 0 8px">Próximos</div>`;showNext.forEach(({ev,p})=>{html+=buildCard(p,ev,false);});}
+  showLive.forEach(({ev,p,isElim})=>{html+=buildCard(p,ev,true,isElim);});
+  if(showNext.length){if(showLive.length)html+=`<div style="font-family:var(--ff-display);font-size:10px;font-weight:700;letter-spacing:.07em;color:var(--qb-muted);text-transform:uppercase;margin:4px 0 8px">Próximos</div>`;showNext.forEach(({ev,p,isElim})=>{html+=buildCard(p,ev,false,isElim);});}
   if(!showLive.length&&!showNext.length){html=`<div class="mm-empty"><div style="font-size:32px;margin-bottom:.5rem">⚽</div><div style="font-family:var(--ff-display);font-size:16px;font-weight:700;letter-spacing:.03em;color:var(--qb-text);margin-bottom:.5rem">No hay partidos ahora mismo</div><div>Cuando empiece un partido aparecerá aquí con predicciones de los 27.</div><div style="margin-top:.75rem;font-size:10px;color:var(--qb-muted)">Auto-actualiza cada 30 segundos</div></div>`;}
   body.innerHTML=html;
 }
