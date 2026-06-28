@@ -3062,19 +3062,25 @@ function predGroups(mid){const g={};PL.forEach(name=>{const p=MD[mid]?.preds[nam
 // v7.7 — A diferencia de predGroups() (grupos: la misma pareja de equipos
 // para los 27, así que cualquier predicción de marcador es válida de
 // mostrar), en eliminatoria cada participante puede tener equipos
-// DISTINTOS en el slot pid (viene de SU PROPIO bracket). Mostrar el
-// marcador que alguien predijo para un cruce que ni siquiera acertó no
-// tiene sentido: no está "jugando" esos puntos. Por eso acá solo se
-// cuenta a quien tiene llave exacta en pid, o cruce válido que apunte a
-// pid desde otro slot de la misma ronda — el mismo criterio que ya usa
-// calcElimMatchBreakdown() para otorgar puntos. De paso, separa a ese
-// mismo grupo "calificado" según a qué equipo predijeron que avanza
-// (empate → avanza el local, mismo criterio de penales que el resto
-// del sistema), para el apartado "¿Quién avanza?".
+// DISTINTOS en el slot pid (viene de SU PROPIO bracket). Esta función
+// devuelve dos cosas con criterios DELIBERADAMENTE distintos:
+//
+// - scores: el marcador exacto solo tiene sentido para quien REALMENTE
+//   está jugando ese cruce — por eso solo cuenta a quien tiene llave
+//   exacta en pid, o cruce válido que apunte a pid desde otro slot de la
+//   misma ronda (mismo criterio que calcElimMatchBreakdown() para
+//   otorgar puntos de marcador).
+// - advance ("¿Quién avanza?"): es una apuesta INDEPENDIENTE de la llave
+//   (igual que los puntos de Clasificado en calcClassifiedPtsForPhase) —
+//   cuenta a CUALQUIER participante que, en algún slot de su propio
+//   bracket de esta ronda, haya puesto a este equipo real (sea cual sea
+//   el rival con el que lo emparejó, correcto o no) y haya predicho que
+//   GANA ese cruce. No exige llave ni cruce correctos.
 function predGroupsElim(pid,realH,realA){
   const round=ELIM_ROUNDS.find(r=>r.ids.includes(pid));
+
+  // ── scores: filtrado por llave/cruce válido ──
   const scores={};
-  const advance={h:[],a:[]};
   PL.forEach(name=>{
     let srcPid=null;
     if(isLlaveCorrecta(name,pid)){
@@ -3088,18 +3094,34 @@ function predGroupsElim(pid,realH,realA){
     }
     if(srcPid===null)return; // no calificado: ni llave ni cruce válido para este partido real
     const p=elimPred(name,srcPid);
-    const predTeams=getElimTeams(name,srcPid);
-    if(!p||!predTeams)return;
+    if(!p)return;
     const k=`${p.h}-${p.a}`;
     if(!scores[k])scores[k]=[];
     scores[k].push(sn(name));
-    let winnerName;
-    if(p.h>p.a)winnerName=predTeams.h;
-    else if(p.a>p.h)winnerName=predTeams.a;
-    else winnerName=predTeams.h; // empate → local avanza (penales)
-    if(realH&&n(winnerName)===n(realH))advance.h.push(sn(name));
-    else if(realA&&n(winnerName)===n(realA))advance.a.push(sn(name));
   });
+
+  // ── advance: apuesta independiente, sin exigir llave/cruce ──
+  const advance={h:[],a:[]};
+  if(round&&realH&&realA){
+    PL.forEach(name=>{
+      let pickedH=false,pickedA=false;
+      round.ids.forEach(s=>{
+        const predTeams=getElimTeams(name,s);if(!predTeams)return;
+        const hasH=n(predTeams.h)===n(realH)||n(predTeams.a)===n(realH);
+        const hasA=n(predTeams.h)===n(realA)||n(predTeams.a)===n(realA);
+        if(!hasH&&!hasA)return; // este slot no involucra a ninguno de los 2 equipos reales
+        const p=elimPred(name,s);if(!p)return;
+        let winnerName;
+        if(p.h>p.a)winnerName=predTeams.h;
+        else if(p.a>p.h)winnerName=predTeams.a;
+        else winnerName=predTeams.h; // empate → local avanza (penales)
+        if(n(winnerName)===n(realH))pickedH=true;
+        else if(n(winnerName)===n(realA))pickedA=true;
+      });
+      if(pickedH)advance.h.push(sn(name));
+      if(pickedA)advance.a.push(sn(name));
+    });
+  }
   return{scores,advance};
 }
 
