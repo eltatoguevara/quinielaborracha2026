@@ -152,8 +152,16 @@ function findCruceValido(name,pid){
   const ps=new Set([n(pred.h),n(pred.a)]);
   for(const pid2 of round.ids){
     if(pid2===pid)continue;
-    const sc2=S.elimScores[pid2]||S.elimScores[String(pid2)];
-    if(!sc2)continue; // ese cruce todavía no tiene resultado real
+    // v7.6 — la identidad del cruce (qué 2 países se enfrentan en pid2) NO
+    // depende de que ese partido YA se haya jugado: depende solo de qué
+    // equipos quedaron asignados a esa llave real. Antes se exigía que
+    // existiera S.elimScores[pid2] ANTES de siquiera comparar los equipos,
+    // así que el punto base de "Cruce" quedaba bloqueado mientras el
+    // partido real del cruce no tuviera marcador — a diferencia de "Llave",
+    // que sí se otorga de inmediato solo con la identidad de equipos. Acá
+    // separamos: real2 (equipos) determina si HAY cruce; sc2 (marcador,
+    // puede no existir todavía) solo se usa después para el bono de
+    // ganador/empate/marcador exacto.
     const real2=getRealElimTeams(pid2);
     if(!real2)continue;
     const rs=new Set([n(real2.h),n(real2.a)]);
@@ -162,6 +170,7 @@ function findCruceValido(name,pid){
     // Mismo par de países encontrado en otra llave de la ronda.
     // ¿Está invertido el orden h/a respecto a la predicción?
     const swapped=n(pred.h)!==n(real2.h);
+    const sc2=S.elimScores[pid2]||S.elimScores[String(pid2)]||null; // puede no existir aún
     return{pidReal:pid2,real:sc2,swapped};
   }
   return null;
@@ -204,15 +213,17 @@ function calcElimMatchBreakdown(name,pid){
     const cruce=findCruceValido(name,pid);
     if(cruce){
       items.push({label:"Cruce",pts:2});
-      const pred=elimPred(name,pid);
-      if(pred){
-        const realH=cruce.swapped?cruce.real.a:cruce.real.h;
-        const realA=cruce.swapped?cruce.real.h:cruce.real.a;
-        const rR=realH>realA?"H":realH<realA?"A":"D";
-        const pR=pred.h>pred.a?"H":pred.h<pred.a?"A":"D";
-        if(rR===pR){
-          items.push({label:rR==="D"?"Empate":"Ganador",pts:rR==="D"?3:2});
-          if(pred.h===realH&&pred.a===realA)items.push({label:"Marcador exacto",pts:3});
+      if(cruce.real){
+        const pred=elimPred(name,pid);
+        if(pred){
+          const realH=cruce.swapped?cruce.real.a:cruce.real.h;
+          const realA=cruce.swapped?cruce.real.h:cruce.real.a;
+          const rR=realH>realA?"H":realH<realA?"A":"D";
+          const pR=pred.h>pred.a?"H":pred.h<pred.a?"A":"D";
+          if(rR===pR){
+            items.push({label:rR==="D"?"Empate":"Ganador",pts:rR==="D"?3:2});
+            if(pred.h===realH&&pred.a===realA)items.push({label:"Marcador exacto",pts:3});
+          }
         }
       }
     }
@@ -662,207 +673,4 @@ function getMovement(name,pos){
   if(diff===0)return `<span style="font-size:10px;color:var(--qb-muted)">—</span>`;
   if(diff>0)return `<span style="font-size:10px;font-weight:800;color:#4dde8c">↑${diff}</span>`;
   return `<span style="font-size:10px;font-weight:800;color:#ef4444">↓${Math.abs(diff)}</span>`;
-}
-
-/* ════════════════════════════════════════════════════════════
-   EVOLUCIÓN — v6.6 (Fase B). Panel "Mi Quiniela → Evolución".
-
-   Idea central: en vez de guardar snapshots nuevos en Firestore (que
-   habría que ir empujando manualmente o con Cloud Functions — no
-   disponibles en el plan Spark), TODO se reconstruye al vuelo a partir
-   de datos que YA existen: cada partido jugado (grupos o eliminatoria)
-   trae una fecha real (S.matchTimes/S.elimTimes, las mismas que ya usa
-   getTodaysMatchIds() para Batallas). "Reproduciendo" el torneo en orden
-   cronológico con esas fechas, se puede calcular la posición de cada
-   participante en CUALQUIER punto del pasado, sin haber guardado nada
-   en ese momento.
-
-   Límite a propósito: el replay solo suma puntos "Básicos" (grupos:
-   ganador/empate + marcador exacto) y los 3 ítems por-partido de
-   eliminatoria (Llave o Cruce + Ganador/Empate + Marcador exacto) — la
-   MISMA cuenta que ya hacen calcPts()/calcElimMatchPts(). Quedan AFUERA
-   del replay histórico: Clasificados (classifiedPts), Avanzado (calcAdv)
-   y Bonos de último lugar — esos se otorgan al cerrar una fase completa,
-   no en la fecha de un partido puntual, así que no hay fecha real a la
-   que atribuirlos sin inventarla. Para que el extremo "HOY" del gráfico
-   nunca quede desalineado con el Ranking real, todas las tarjetas usan
-   el total OFICIAL de getRank() para "ahora" y solo usan el replay para
-   el resto de la línea de tiempo (el pasado).
-   ════════════════════════════════════════════════════════════ */
-
-// Puntos de UN solo partido de fase de grupos — misma cuenta que calcPts()
-// pero aislada a un mid puntual, para poder sumarla en orden cronológico.
-function calcBasicMatchPts(name,mid){
-  const s=sc(mid);if(!s)return 0;
-  const p=MD[mid]?.preds[name];if(!p)return 0;
-  const rR=s.h>s.a?"H":s.h<s.a?"A":"D";
-  const pR=p.h>p.a?"H":p.h<p.a?"A":"D";
-  if(rR!==pR)return 0;
-  let pts=rR==="D"?3:2;
-  if(p.h===s.h&&p.a===s.a)pts+=3;
-  return pts;
-}
-
-// ¿Acertó este participante el RESULTADO (ganador/empate, no
-// necesariamente el marcador) de este partido puntual? Devuelve null si
-// no hay una predicción válida sobre la que evaluar (nunca jugó ese
-// cruce, o el partido todavía no tiene marcador) — null se trata distinto
-// de false en la racha de aciertos y en la Tendencia: un partido sin
-// datos no debe contar como fallo.
-function isMatchHit(name,type,id){
-  if(type==='group'){
-    const s=sc(id);if(!s)return null;
-    const p=MD[id]?.preds[name];if(!p)return null;
-    const rR=s.h>s.a?"H":s.h<s.a?"A":"D";
-    const pR=p.h>p.a?"H":p.h<p.a?"A":"D";
-    return rR===pR;
-  }
-  const llaveOk=isLlaveCorrecta(name,id);
-  const cruceOk=!llaveOk&&!!findCruceValido(name,id);
-  if(!llaveOk&&!cruceOk)return null;
-  const items=calcElimMatchBreakdown(name,id);
-  return items.some(it=>it.label==='Ganador'||it.label==='Empate');
-}
-
-// ¿Hubo marcador EXACTO en este partido puntual para este participante?
-function isMatchExacto(name,type,id){
-  if(type==='group'){
-    const s=sc(id);if(!s)return false;
-    const p=MD[id]?.preds[name];if(!p)return false;
-    return p.h===s.h&&p.a===s.a;
-  }
-  return calcElimMatchBreakdown(name,id).some(it=>it.label==='Marcador exacto');
-}
-
-// Lista cronológica de TODOS los partidos (grupos + eliminatoria) que ya
-// tienen marcador real cargado, ordenados por fecha real de juego. Si un
-// partido tiene marcador pero nunca se le registró fecha (ESPN no la
-// trajo a tiempo, o el admin lo cargó a mano), se ubica "ahora" para no
-// perder esos puntos del total — queda al final de la línea de tiempo en
-// vez de en una fecha inventada.
-function getChronoMatchEvents(){
-  const events=[];
-  MIDS.forEach(mid=>{
-    const s=sc(mid);if(!s)return;
-    events.push({ts:S.matchTimes[mid]||Date.now(),type:'group',id:mid});
-  });
-  for(let pid=73;pid<=104;pid++){
-    const s=S.elimScores[pid]||S.elimScores[String(pid)];if(!s)continue;
-    events.push({ts:S.elimTimes[pid]||Date.now(),type:'elim',id:pid});
-  }
-  events.sort((a,b)=>a.ts-b.ts);
-  return events;
-}
-
-// El corazón del replay: por cada partido jugado, en orden cronológico,
-// cuánto va sumando cada participante, y qué posición ocupa cada uno
-// justo después de ese partido. Un snapshot por partido (no por
-// participante) — los 27 comparten la misma línea de tiempo de eventos.
-// v6.6 — Los participantes ocultos (S.hiddenPL) NO ocupan un puesto del
-// ranking histórico, igual que ya hace getDashStatsInfo() con el ranking
-// actual — si no, la posición de Evolución no coincidiría con la que el
-// participante ya ve en la tarjeta de Mi Perfil.
-function buildHistoricalSnapshots(events){
-  events=events||getChronoMatchEvents();
-  const isHidden=name=>{
-    if(!S.hiddenPL)return false;
-    return S.hiddenPL instanceof Set?S.hiddenPL.has(name):!!(S.hiddenPL?.[name]);
-  };
-  const visibleNames=PL.filter(name=>!isHidden(name));
-  const cum={};PL.forEach(name=>cum[name]=0);
-  return events.map(ev=>{
-    PL.forEach(name=>{
-      cum[name]+=ev.type==='group'?calcBasicMatchPts(name,ev.id):calcElimMatchPts(name,ev.id);
-    });
-    const ranked=visibleNames.slice().sort((a,b)=>cum[b]-cum[a]);
-    const ranks={};ranked.forEach((name,idx)=>{ranks[name]=idx+1;});
-    return{ts:ev.ts,totals:{...cum},ranks};
-  });
-}
-
-// Agrupa los snapshots por DÍA CALENDARIO (1 "jornada" = 1 fecha real con
-// al menos un partido jugado). Para cada jornada guarda el acumulado de
-// puntos al EMPEZAR el día (startCum, = el acumulado al cerrar el día
-// anterior) y al TERMINAR el día (endCum, = el último snapshot del día) —
-// la diferencia es cuánto sumó cada participante ESE día puntual.
-function groupSnapshotsByJornada(snapshots){
-  const days=[];
-  let prevCum={};PL.forEach(name=>prevCum[name]=0);
-  let cur=null;
-  snapshots.forEach(snap=>{
-    const d=new Date(snap.ts);
-    const dayKey=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-    if(!cur||cur.dayKey!==dayKey){
-      if(cur)days.push(cur);
-      cur={dayKey,ts:snap.ts,startCum:{...prevCum},endCum:null,ranks:null};
-    }
-    cur.ts=snap.ts; // se queda con la fecha del ÚLTIMO partido del día
-    cur.endCum=snap.totals;
-    cur.ranks=snap.ranks;
-    prevCum=snap.totals;
-  });
-  if(cur)days.push(cur);
-  return days;
-}
-
-// Historial puntual (partido por partido, no por jornada) de aciertos de
-// UN participante, filtrando los partidos donde nunca llegó a tener una
-// predicción válida (no cuentan ni como acierto ni como fallo). Cada
-// entrada lleva también la posición en el ranking justo después de ese
-// partido (del replay), para que la Tendencia pueda comparar "antes" vs
-// "ahora" sin tener que recorrer todo de nuevo.
-function getParticipantMatchHistory(name,events,snapshots){
-  const hist=[];
-  events.forEach((ev,idx)=>{
-    const hit=isMatchHit(name,ev.type,ev.id);
-    if(hit===null)return;
-    hist.push({ts:ev.ts,hit,rank:snapshots[idx].ranks[name]});
-  });
-  return hist;
-}
-
-// 📈 Tendencia — compara los últimos N partidos con los N anteriores a
-// esos (N=20, o menos si todavía no se jugaron suficientes). Devuelve
-// available:false si hay muy pocos partidos jugados para que la
-// comparación tenga sentido (mínimo 10 en cada ventana).
-function getTendenciaStats(name,events,snapshots,rankNow){
-  const hist=getParticipantMatchHistory(name,events,snapshots);
-  const winSize=Math.min(20,Math.floor(hist.length/2));
-  if(winSize<5)return{available:false,totalPlayed:hist.length};
-  const last=hist.slice(-winSize);
-  const prev=hist.slice(-winSize*2,-winSize);
-  const hitRate=arr=>arr.length?Math.round(100*arr.filter(h=>h.hit).length/arr.length):null;
-  const precAhora=hitRate(last);
-  const precAntes=hitRate(prev.length?prev:last);
-  const rankAntes=hist[hist.length-winSize].rank;
-  let trend='estable';
-  if(precAhora>precAntes||(precAhora===precAntes&&rankNow<rankAntes))trend='mejorando';
-  else if(precAhora<precAntes||(precAhora===precAntes&&rankNow>rankAntes))trend='empeorando';
-  return{available:true,winSize,precAntes,precAhora,rankAntes,rankNow,trend};
-}
-
-// 🎯 Logros — umbrales fijos acordados: Top 15/10/5/3, Primer marcador
-// exacto, y 10 aciertos consecutivos. bestPos es la MEJOR posición que
-// el participante alcanzó en cualquier momento (incluyendo hoy, con el
-// total oficial) — una vez alcanzado un umbral, el logro queda para
-// siempre, aunque después bajen posiciones.
-function getLogrosStats(name,events,days,rankNow){
-  let exactoAlguna=false;
-  events.forEach(ev=>{ if(isMatchExacto(name,ev.type,ev.id))exactoAlguna=true; });
-
-  let bestStreak=0,cur=0;
-  events.forEach(ev=>{
-    const hit=isMatchHit(name,ev.type,ev.id);
-    if(hit===null)return; // no rompe la racha: simplemente no hay dato
-    if(hit){cur++;bestStreak=Math.max(bestStreak,cur);}else cur=0;
-  });
-
-  const histPositions=days.map(d=>d.ranks[name]).filter(Boolean);
-  const bestPos=Math.min(rankNow,...(histPositions.length?histPositions:[rankNow]));
-
-  const TIERS=[15,10,5,3];
-  const unlockedTiers=TIERS.filter(t=>bestPos<=t);
-  const nextTier=TIERS.find(t=>bestPos>t)||null;
-
-  return{exactoAlguna,bestStreak,racha10:bestStreak>=10,bestPos,unlockedTiers,nextTier};
 }
