@@ -3059,13 +3059,55 @@ async function loadMM(showSpinner=false){
 }
 
 function predGroups(mid){const g={};PL.forEach(name=>{const p=MD[mid]?.preds[name];if(!p)return;const k=`${p.h}-${p.a}`;if(!g[k])g[k]=[];g[k].push(sn(name));});return g;}
-function predGroupsElim(pid){const g={};PL.forEach(name=>{const p=elimPred(name,pid);if(!p)return;const k=`${p.h}-${p.a}`;if(!g[k])g[k]=[];g[k].push(sn(name));});return g;}
+// v7.7 — A diferencia de predGroups() (grupos: la misma pareja de equipos
+// para los 27, así que cualquier predicción de marcador es válida de
+// mostrar), en eliminatoria cada participante puede tener equipos
+// DISTINTOS en el slot pid (viene de SU PROPIO bracket). Mostrar el
+// marcador que alguien predijo para un cruce que ni siquiera acertó no
+// tiene sentido: no está "jugando" esos puntos. Por eso acá solo se
+// cuenta a quien tiene llave exacta en pid, o cruce válido que apunte a
+// pid desde otro slot de la misma ronda — el mismo criterio que ya usa
+// calcElimMatchBreakdown() para otorgar puntos. De paso, separa a ese
+// mismo grupo "calificado" según a qué equipo predijeron que avanza
+// (empate → avanza el local, mismo criterio de penales que el resto
+// del sistema), para el apartado "¿Quién avanza?".
+function predGroupsElim(pid,realH,realA){
+  const round=ELIM_ROUNDS.find(r=>r.ids.includes(pid));
+  const scores={};
+  const advance={h:[],a:[]};
+  PL.forEach(name=>{
+    let srcPid=null;
+    if(isLlaveCorrecta(name,pid)){
+      srcPid=pid;
+    }else if(round){
+      for(const s of round.ids){
+        if(s===pid)continue;
+        const cruce=findCruceValido(name,s);
+        if(cruce&&cruce.pidReal===pid){srcPid=s;break;}
+      }
+    }
+    if(srcPid===null)return; // no calificado: ni llave ni cruce válido para este partido real
+    const p=elimPred(name,srcPid);
+    const predTeams=getElimTeams(name,srcPid);
+    if(!p||!predTeams)return;
+    const k=`${p.h}-${p.a}`;
+    if(!scores[k])scores[k]=[];
+    scores[k].push(sn(name));
+    let winnerName;
+    if(p.h>p.a)winnerName=predTeams.h;
+    else if(p.a>p.h)winnerName=predTeams.a;
+    else winnerName=predTeams.h; // empate → local avanza (penales)
+    if(realH&&n(winnerName)===n(realH))advance.h.push(sn(name));
+    else if(realA&&n(winnerName)===n(realA))advance.a.push(sn(name));
+  });
+  return{scores,advance};
+}
 
 function renderMM(liveList,preList){
   const body=document.getElementById("mm-body");if(!body)return;
   const showLive=liveList;const showNext=preList.slice(0,4);let html="";
   function buildCard(parsed,ev,isLive,isElim){
-    let hN,aN,hF,aF,pgs,tagLive,tagNext;
+    let hN,aN,hF,aF,pgs,tagLive,tagNext,advance={h:[],a:[]};
     if(isElim){
       const pid=parsed.pid;
       const round=ELIM_ROUNDS.find(r=>r.ids.includes(pid));
@@ -3073,7 +3115,8 @@ function renderMM(liveList,preList){
       const real=getRealElimTeams(pid);
       hN=real?real.h:parsed.hN;aN=real?real.a:parsed.aN;
       hF=getFlag(undefined,hN);aF=getFlag(undefined,aN);
-      pgs=predGroupsElim(pid);
+      const q=predGroupsElim(pid,hN,aN);
+      pgs=q.scores;advance=q.advance;
       tagLive=`${roundLbl} · P${pid}`;
       tagNext=`${roundLbl} · ${hN} vs ${aN}`;
     }else{
@@ -3085,6 +3128,19 @@ function renderMM(liveList,preList){
       tagNext=`Grupo ${g} · ${lbl}`;
     }
     const sorted=Object.entries(pgs).sort((a,b)=>b[1].length-a[1].length);
+    // Apartado "¿Quién avanza?" — solo eliminatoria, sobre el mismo grupo
+    // calificado (llave/cruce válido) que ya filtra pgs arriba.
+    const advanceHtml=isElim?`<div style="padding:6px 14px 4px;font-family:var(--ff-display);font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--qb-muted);text-transform:uppercase;border-top:1px dashed var(--qb-border)">¿Quién avanza? <span style="font-weight:400;text-transform:none;letter-spacing:0">(según llave/cruce válido)</span></div>
+      <div style="display:flex;gap:10px;padding:0 14px 10px">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:10px;font-weight:700;color:var(--qb-text);margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${hF} ${hN} <span style="color:var(--qb-muted);font-weight:400">(${advance.h.length})</span></div>
+          <div class="names">${advance.h.length?advance.h.map(nm=>`<span class="nchip">${nm}</span>`).join(""):`<span style="font-size:10px;color:var(--qb-muted)">—</span>`}</div>
+        </div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:10px;font-weight:700;color:var(--qb-text);margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${aF} ${aN} <span style="color:var(--qb-muted);font-weight:400">(${advance.a.length})</span></div>
+          <div class="names">${advance.a.length?advance.a.map(nm=>`<span class="nchip">${nm}</span>`).join(""):`<span style="font-size:10px;color:var(--qb-muted)">—</span>`}</div>
+        </div>
+      </div>`:"";
     if(isLive){
       let hs=parsed.homeScore,as=parsed.awayScore;
       if(isElim&&n(hN)===n(parsed.aN)&&n(aN)===n(parsed.hN)){const t=hs;hs=as;as=t;} // ESPN reportó h/a invertido vs equipo guardado
@@ -3092,12 +3148,12 @@ function renderMM(liveList,preList){
       const predsHtml=sorted.map(([score,names])=>{const hit=score===curKey;
         return`<div class="pred-row"><div class="pred-row-hdr"><span class="spill ${hit?"match":""}">${score.replace("-"," – ")}</span><span class="cpill">${names.length}</span>${hit?`<span style="font-size:10px;color:#15803d;font-weight:500">← actual</span>`:""}</div><div class="names">${names.map(n=>`<span class="nchip ${hit?"hit":""}">${n}</span>`).join("")}</div></div>`;
       }).join("")||`<div style="font-size:11px;color:var(--qb-muted);padding:4px 0">Sin predicciones</div>`;
-      return`<div class="live-card is-live"><div class="live-hdr"><div style="display:flex;align-items:center;gap:6px"><span class="ldot"></span><span style="font-family:var(--ff-display);font-size:12px;font-weight:700;letter-spacing:.04em;color:var(--qb-red);text-transform:uppercase">EN VIVO</span>${parsed.clock?`<span style="font-size:11px;color:var(--qb-muted)">${parsed.clock}'</span>`:""}</div><span style="font-size:10px;color:var(--qb-muted)">${tagLive}</span></div><div class="scoreboard"><div class="live-team"><span class="live-team-flag">${hF}</span><span class="live-team-name">${hN}</span></div><div class="live-score red">${hs} – ${as}</div><div class="live-team"><span class="live-team-flag">${aF}</span><span class="live-team-name">${aN}</span></div></div><div style="padding:0 14px 6px;font-family:var(--ff-display);font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--qb-muted);text-transform:uppercase">Predicciones de los 27</div><div class="pred-section">${predsHtml}</div></div>`;
+      return`<div class="live-card is-live"><div class="live-hdr"><div style="display:flex;align-items:center;gap:6px"><span class="ldot"></span><span style="font-family:var(--ff-display);font-size:12px;font-weight:700;letter-spacing:.04em;color:var(--qb-red);text-transform:uppercase">EN VIVO</span>${parsed.clock?`<span style="font-size:11px;color:var(--qb-muted)">${parsed.clock}'</span>`:""}</div><span style="font-size:10px;color:var(--qb-muted)">${tagLive}</span></div><div class="scoreboard"><div class="live-team"><span class="live-team-flag">${hF}</span><span class="live-team-name">${hN}</span></div><div class="live-score red">${hs} – ${as}</div><div class="live-team"><span class="live-team-flag">${aF}</span><span class="live-team-name">${aN}</span></div></div><div style="padding:0 14px 6px;font-family:var(--ff-display);font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--qb-muted);text-transform:uppercase">Predicciones de los 27</div><div class="pred-section">${predsHtml}</div>${advanceHtml}</div>`;
     }else{
       const ko=new Date(ev.date).toLocaleTimeString("es",{hour:"2-digit",minute:"2-digit"});
       const koDate=new Date(ev.date).toLocaleDateString("es",{weekday:"short",day:"numeric",month:"short"});
       const predsHtml=sorted.map(([score,names])=>`<div class="pred-row"><div class="pred-row-hdr"><span class="spill">${score.replace("-"," – ")}</span><span class="cpill">${names.length}</span></div><div class="names">${names.map(n=>`<span class="nchip">${n}</span>`).join("")}</div></div>`).join("");
-      return`<div class="live-card"><div class="live-hdr"><span style="font-family:var(--ff-display);font-size:12px;font-weight:700;letter-spacing:.03em;color:var(--qb-text)">${tagNext}</span><span style="font-size:11px;color:var(--qb-muted)">⏱ ${ko} · ${koDate}</span></div><div class="scoreboard" style="padding:13px 14px 8px"><div class="live-team"><span class="live-team-flag">${hF}</span><span class="live-team-name">${hN}</span></div><div class="live-score" style="font-family:var(--ff-display);font-size:28px;font-weight:900;color:var(--qb-muted)">VS</div><div class="live-team"><span class="live-team-flag">${aF}</span><span class="live-team-name">${aN}</span></div></div>${predsHtml?`<div style="padding:0 14px 6px;font-family:var(--ff-display);font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--qb-muted);text-transform:uppercase">Predicciones</div><div class="pred-section">${predsHtml}</div>`:""}</div>`;
+      return`<div class="live-card"><div class="live-hdr"><span style="font-family:var(--ff-display);font-size:12px;font-weight:700;letter-spacing:.03em;color:var(--qb-text)">${tagNext}</span><span style="font-size:11px;color:var(--qb-muted)">⏱ ${ko} · ${koDate}</span></div><div class="scoreboard" style="padding:13px 14px 8px"><div class="live-team"><span class="live-team-flag">${hF}</span><span class="live-team-name">${hN}</span></div><div class="live-score" style="font-family:var(--ff-display);font-size:28px;font-weight:900;color:var(--qb-muted)">VS</div><div class="live-team"><span class="live-team-flag">${aF}</span><span class="live-team-name">${aN}</span></div></div>${predsHtml?`<div style="padding:0 14px 6px;font-family:var(--ff-display);font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--qb-muted);text-transform:uppercase">Predicciones</div><div class="pred-section">${predsHtml}</div>`:""}${advanceHtml}</div>`;
     }
   }
   showLive.forEach(({ev,p,isElim})=>{html+=buildCard(p,ev,true,isElim);});
