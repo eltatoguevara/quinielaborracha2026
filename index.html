@@ -1,16 +1,6 @@
 
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 
-<!-- v7.5 — FIX: bug reportado donde alguien se registraba (correo+Clave),
-     veía "¡Listo!" y llenaba su quiniela, pero nunca aparecía en el panel
-     Admin y al volver a entrar le pedía el correo otra vez desde cero.
-     CAUSA RAÍZ: la creación de un participante nuevo mostraba éxito ANTES
-     de confirmar con el servidor; si firestore.rules (registro_privado)
-     no estaba publicado en Firebase Console, el batch entero se rechazaba
-     en silencio (ver rgCreateParticipantConfirmed en participantes.js y
-     onCrearSubmit en registro.js). Ahora se espera la confirmación real
-     antes de decir "¡Listo!", y si el servidor rechaza, se muestra un
-     error visible y persistente en vez de fallar en silencio. -->
 <!-- v7.3 — PWA: instalable en el celular, ícono en pantalla de inicio.
      start_url/scope del manifest son relativos a propósito, para que
      funcionen igual estando en eltatoguevara.github.io/quinielaborracha2026/
@@ -168,7 +158,7 @@
       <img id="logo-img" src="" alt="QB" style="width:40px;height:40px;object-fit:contain;border-radius:8px">
     </div>
     <div style="flex:1" id="hdr-title-col">
-      <div class="hdr-title" id="hdr-title-row">Quiniela Borracha 2026 <span class="ver">v7.5</span>
+      <div class="hdr-title" id="hdr-title-row">Quiniela Borracha 2026 <span class="ver">v7.4</span>
         <span id="admin-indicator" onclick="openLoginModal()" style="cursor:pointer;font-size:10px;padding:1px 6px;border-radius:4px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.08);color:rgba(255,255,255,.5);transition:all .2s;margin-left:4px" title="Admin">🔑</span>
       </div>
       <div class="hdr-sub" style="display:flex;align-items:center;gap:8px">
@@ -621,13 +611,13 @@
 
 <div id="pdfPoster"></div>
 
-<script src="participantes.js?v=6.9.2"></script>
+<script src="participantes.js?v=6.9.1"></script>
 <script src="legacy-migracion.js?v=6.6"></script>
 <script src="utils.js?v=6.6"></script>
 <script src="scoring.js?v=6.6.3"></script>
 <script src="totp.js?v=7.1"></script>
-<script src="app.js?v=7.2"></script>
-<script src="registro.js?v=6.9.5"></script>
+<script src="app.js?v=7.2.1"></script>
+<script src="registro.js?v=6.9.4"></script>
 
 <!-- v7.4 — Acá ya corrió el primer render de app.js (load()+renderRank()
      desde caché local), así que es el momento correcto para ocultar

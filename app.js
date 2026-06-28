@@ -2418,7 +2418,7 @@ const ESPN_NAME_ES={
   "Iran":"Irán","New Zealand":"Nueva Zelanda","Belgium":"Bélgica","Egypt":"Egipto",
   "France":"Francia","Senegal":"Senegal","Iraq":"Irak","Norway":"Noruega",
   "Argentina":"Argentina","Algeria":"Argelia","Austria":"Austria","Jordan":"Jordania",
-  "Portugal":"Portugal","DR Congo":"RD Congo","Congo":"RD Congo","Uzbekistan":"Uzbekistán",
+  "Portugal":"Portugal","DR Congo":"RD Congo","Congo DR":"RD Congo","Congo":"RD Congo","Uzbekistan":"Uzbekistán",
   "Colombia":"Colombia","England":"Inglaterra","Croatia":"Croacia","Ghana":"Ghana","Panama":"Panamá",
   "Paraguay":"Paraguay","Australia":"Australia","Korea Republic":"Corea del Sur","Curacao":"Curazao","Curaçao":"Curazao",
   "Canada":"Canadá","Bosnia-Herzegovina":"Bosnia y Herzegovina","South Africa":"Sudáfrica",
