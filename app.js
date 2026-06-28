@@ -3152,7 +3152,7 @@ function renderMM(liveList,preList){
     const sorted=Object.entries(pgs).sort((a,b)=>b[1].length-a[1].length);
     // Apartado "¿Quién avanza?" — solo eliminatoria, sobre el mismo grupo
     // calificado (llave/cruce válido) que ya filtra pgs arriba.
-    const advanceHtml=isElim?`<div style="padding:6px 14px 4px;font-family:var(--ff-display);font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--qb-muted);text-transform:uppercase;border-top:1px dashed var(--qb-border)">¿Quién avanza? <span style="font-weight:400;text-transform:none;letter-spacing:0">(según llave/cruce válido)</span></div>
+    const advanceHtml=isElim?`<div style="padding:6px 14px 4px;font-family:var(--ff-display);font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--qb-muted);text-transform:uppercase;border-top:1px dashed var(--qb-border)">¿Quién avanza?</div>
       <div style="display:flex;gap:10px;padding:0 14px 10px">
         <div style="flex:1;min-width:0">
           <div style="font-size:10px;font-weight:700;color:var(--qb-text);margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${hF} ${hN} <span style="color:var(--qb-muted);font-weight:400">(${advance.h.length})</span></div>
